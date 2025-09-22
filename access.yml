@@ -9,4 +9,4 @@ permissions:
   - "*.js": public
 
   - /Blog/: public
-  - /: public
+  - /*: public
