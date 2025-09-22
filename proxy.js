@@ -160,7 +160,6 @@ app.get('/static/contentIndex.json', async (req, res) => {
       // replace /index at end with /
       // e.g. "/Contacts/Bradley-Kreider/index" -> "/Contacts/Bradley-Kreider/"
       if (vpath.endsWith('/index')) vpath = vpath.slice(0, -5) || '/';
-      console.log('contentIndex item:', key, 'slug:', slug, 'vpath:', vpath);
       if (isPathAllowedForUser(vpath, viewer)) out[key] = val;
     }
 
