@@ -1,18 +1,19 @@
 // proxy.js
-// npm i express http-proxy-middleware js-yaml
+// npm i express http-proxy-middleware js-yaml picomatch
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const yaml = require('js-yaml');
+const picomatch = require('picomatch');
 
 const ACL_PATH = path.resolve('./access.yml');
 const TARGET = process.env.TARGET || 'http://localhost:5009';
 
 let USERS = {};       // { username: password }
-let PERMISSIONS = []; // [{ pattern: '/path', allow: Set([...]) | 'any' | 'public' }]
+let PERMISSIONS = []; // [{ pattern, allow, match, score }]
 
-// ---- ACL LOADER (YAML) ----
+// ---------- ACL LOADER (YAML) ----------
 function parseAccessYaml(text) {
   const doc = yaml.load(text) || {};
   const usersArr = Array.isArray(doc.users) ? doc.users : [];
@@ -29,8 +30,10 @@ function parseAccessYaml(text) {
   const perms = [];
   for (const entry of permsArr) {
     if (!entry || typeof entry !== 'object') continue;
-    const [pattern, allowVal] = Object.entries(entry)[0] || [];
-    if (!pattern) continue;
+    const [rawPattern, allowVal] = Object.entries(entry)[0] || [];
+    if (!rawPattern) continue;
+
+    const pattern = normalizePath(rawPattern);
 
     let allow;
     if (typeof allowVal === 'string') {
@@ -49,11 +52,18 @@ function parseAccessYaml(text) {
       continue;
     }
 
-    perms.push({ pattern: String(pattern), allow });
+    const match = picomatch(pattern, {
+      dot: true,       // match dotfiles
+      posix: true,     // use forward slashes
+      strictSlashes: true // "/" is distinct from "/\*"
+    });
+
+    perms.push({ pattern, allow, match, score: specificity(pattern) });
   }
 
-  // Most-specific first
-  perms.sort((a, b) => b.pattern.length - a.pattern.length);
+  // Sort by specificity: more non-wildcard chars first, then fewer wildcards, then longer
+  perms.sort(compareSpecificity);
+
   return { users, perms };
 }
 
@@ -65,15 +75,47 @@ function loadAccess() {
   console.log(`Loaded ${Object.keys(USERS).length} users, ${PERMISSIONS.length} rules`);
 }
 
-function bestRuleForPath(reqPath) {
-  const norm = reqPath.endsWith('/') ? reqPath.slice(0, -1) : reqPath;
-  for (const rule of PERMISSIONS) {
-    const pat = rule.pattern.endsWith('/') ? rule.pattern.slice(0, -1) : rule.pattern;
-    if (norm === pat || norm.startsWith(pat + '/')) return rule;
-  }
-  return null;
+// ---------- Matching helpers (EXACT with GLOBS) ----------
+function normalizePath(p) {
+  if (!p) return '/';
+  let out = p.replace(/\\/g, '/'); // posix
+  if (!out.startsWith('/')) out = '/' + out;
+  // keep trailing slash as-is; globs are intentional
+  return out;
 }
 
+function specificity(pattern) {
+  // Higher is more specific: count of non-wildcard chars, then inverse wildcards, then total length
+  const wildcardMatches = pattern.match(/[*?]/g) || [];
+  const wildcards = wildcardMatches.length;
+  const nonWildcard = pattern.length - wildcards;
+  return { nonWildcard, wildcards, length: pattern.length };
+}
+
+function compareSpecificity(a, b) {
+  // sort desc by nonWildcard, asc by wildcards, desc by length
+  if (a.score.nonWildcard !== b.score.nonWildcard) {
+    return b.score.nonWildcard - a.score.nonWildcard;
+  }
+  if (a.score.wildcards !== b.score.wildcards) {
+    return a.score.wildcards - b.score.wildcards;
+  }
+  return b.score.length - a.score.length;
+}
+
+function bestRuleForPathExactGlob(reqPath) {
+  const pathNorm = normalizePath(reqPath);
+  console.log(reqPath)
+  console.log(pathNorm)
+  console.log(PERMISSIONS)
+  // collect all matches
+  const matches = PERMISSIONS.filter(r => r.match(pathNorm));
+  if (matches.length === 0) return null;
+  // PERMISSIONS is already sorted by specificity; first matching is the winner
+  return matches[0];
+}
+
+// ---------- Basic Auth helpers ----------
 function parseBasicAuth(req) {
   const hdr = req.headers['authorization'];
   if (!hdr || !hdr.startsWith('Basic ')) return null;
@@ -84,21 +126,16 @@ function parseBasicAuth(req) {
   if (idx < 0) return null;
   return { username: raw.slice(0, idx), password: raw.slice(idx + 1) };
 }
+function isValidUser(u, p) { return USERS[u] !== undefined && USERS[u] === p; }
 
-function isValidUser(u, p) {
-  return USERS[u] !== undefined && USERS[u] === p;
-}
-
-// NEW: check if this (virtual) path is visible to a possibly-anonymous user
+// NEW: check if a *virtual* path is visible to a possibly-anonymous user
 function isPathAllowedForUser(virtualPath, usernameOrNull) {
-  const rule = bestRuleForPath(virtualPath);
-  if (!rule) return false;                  // default-deny if no rule
-  if (rule.allow === 'public') return true; // public: everyone
-
-  if (!usernameOrNull) return false;        // unauthenticated but not public
-
-  if (rule.allow === 'any') return true;    // any authenticated user
-  return rule.allow.has(usernameOrNull);    // specific users
+  const rule = bestRuleForPathExactGlob(virtualPath);
+  if (!rule) return false;                // default-deny
+  if (rule.allow === 'public') return true;
+  if (!usernameOrNull) return false;      // unauthenticated and not public
+  if (rule.allow === 'any') return true;  // any authenticated user
+  return rule.allow.has(usernameOrNull);  // specific usernames
 }
 
 // Initial load
@@ -106,7 +143,7 @@ loadAccess();
 
 const app = express();
 
-// Hot-reload ACL
+// ---------- Hot reload ----------
 app.post('/-/reload-acl', (req, res) => {
   try {
     loadAccess();
@@ -117,63 +154,45 @@ app.post('/-/reload-acl', (req, res) => {
   }
 });
 
-/**
- * NEW: Intercept and sanitize Quartz content index
- * - We do NOT challenge with 401 here; we just treat the request as anonymous
- *   unless valid Basic creds are present. That way, the index itself is safe.
- *
- * Visible file rule:
- *   virtualPath = '/' + slug (e.g., 'foo/bar.md' -> '/foo/bar.md')
- *   Only include entries where isPathAllowedForUser(virtualPath, username) is true.
- */
+// ---------- Intercept content index (filter by slug as exact+glob) ----------
 app.get('/static/contentIndex.json', async (req, res) => {
   try {
-    // Determine viewer identity (optional)
     let viewer = null;
     const creds = parseBasicAuth(req);
     if (creds && isValidUser(creds.username, creds.password)) {
       viewer = creds.username;
     }
 
-    // Fetch upstream JSON
     const upstreamUrl = new URL(req.originalUrl, TARGET).toString();
-    const r = await fetch(upstreamUrl, {
-      headers: { 'accept': 'application/json' },
-    });
-    if (!r.ok) {
-      return res.status(r.status).send(`Upstream error (${r.status})`);
-    }
+    const r = await fetch(upstreamUrl, { headers: { 'accept': 'application/json' } });
+    if (!r.ok) return res.status(r.status).send(`Upstream error (${r.status})`);
     const data = await r.json();
 
-    // Expecting an object keyed by slug; each value has slug
     const out = {};
     for (const [key, val] of Object.entries(data || {})) {
       if (!val || typeof val !== 'object') continue;
-      const fp = String(val.slug || '').replace(/^\/\*/, ''); // strip leading slashes
+      const fp = String(val.slug || '').replace(/^\/\*/, ''); // 'foo/bar.md'
       if (!fp) continue;
 
-      const vpath = '/' + fp; // virtual path checked against ACL
-      if (isPathAllowedForUser(vpath, viewer)) {
-        out[key] = val;
-      }
+      // exact+glob check: we test "/" + slug
+      const vpath = normalizePath(fp);
+      if (isPathAllowedForUser(vpath, viewer)) out[key] = val;
     }
 
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.status(200).send(JSON.stringify(out));
   } catch (e) {
     console.error('contentIndex interceptor failed:', e);
-    // On failure, play it safe and return empty index
     res.setHeader('content-type', 'application/json; charset=utf-8');
     res.status(200).send('{}');
   }
 });
 
-// Auth/ACL gate for everything else (unchanged from last version)
+// ---------- Auth/ACL gate for everything else (uses exact+globs) ----------
 app.use((req, res, next) => {
-  const rule = bestRuleForPath(req.path);
-  if (!rule) {
-    return res.status(403).send('Forbidden: no matching rule');
-  }
+  const rule = bestRuleForPathExactGlob(req.path);
+  if (!rule) return res.status(403).send('Forbidden: no matching rule');
+
   if (rule.allow === 'public') return next();
 
   const creds = parseBasicAuth(req);
@@ -182,17 +201,14 @@ app.use((req, res, next) => {
     return res.status(401).send('Authentication required');
   }
 
-  // any = any valid user
   if (rule.allow === 'any') return next();
-
-  // otherwise, specific list
   if (!rule.allow.has(creds.username)) {
     return res.status(403).send('Forbidden: not allowed');
   }
-  return next();
+  next();
 });
 
-// Proxy to target
+// ---------- Proxy ----------
 app.use('/', createProxyMiddleware({
   target: TARGET,
   changeOrigin: true,

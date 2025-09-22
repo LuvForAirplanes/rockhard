@@ -4,9 +4,9 @@ users:
 
 permissions:
   # UI Stuff 
-  - /static: public
-  - /index.css: public
-  - /prescript.js: public
-  - /postscript.js: public
+  - "/static/*": public
+  - "*.css": public
+  - "*.js": public
 
-  - /blog: public
+  - /Blog/: public
+  - /: public
