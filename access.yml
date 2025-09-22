@@ -3,12 +3,10 @@ users:
   - annie: herpass
 
 permissions:
+  # UI Stuff 
   - /static: public
   - /index.css: public
   - /prescript.js: public
   - /postscript.js: public
 
-  - /test: micah
-  - /annie:
-    - annie
-#    - micah
+  - /blog: public

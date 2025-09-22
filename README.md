@@ -29,3 +29,9 @@ npm i
 npx quartz create
 ```
 Then, create your `quartz.service` file, starting and activating it when completed.
+
+## Updating Vault Content
+To update permissions and files in one crack, use this command:
+```
+sudo systemctl restart rockhard.service && sudo systemctl restart quartz.service
+```
