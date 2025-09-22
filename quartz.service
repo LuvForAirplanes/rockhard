@@ -1,0 +1,12 @@
+[Unit]
+Description=Quartz Service
+After=network.target
+
+[Service]
+ExecStart=npx quartz build --serve -d /Obsidian --port 5009
+Restart=always
+User=micah
+WorkingDirectory=/opt/quartz
+
+[Install]
+WantedBy=multi-user.target

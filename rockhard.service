@@ -1,0 +1,12 @@
+[Unit]
+Description=Rockhard Service
+After=network.target
+
+[Service]
+ExecStart=node /opt/rockhard/proxy.js
+Restart=always
+User=micah
+WorkingDirectory=/opt/rockhard
+
+[Install]
+WantedBy=multi-user.target

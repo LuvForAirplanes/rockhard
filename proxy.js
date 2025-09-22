@@ -7,7 +7,7 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const yaml = require('js-yaml');
 
 const ACL_PATH = path.resolve('./access.yml');
-const TARGET = process.env.TARGET || 'http://localhost:8080';
+const TARGET = process.env.TARGET || 'http://localhost:5009';
 
 let USERS = {};       // { username: password }
 let PERMISSIONS = []; // [{ pattern: '/path', allow: Set([...]) | 'any' | 'public' }]
@@ -199,7 +199,7 @@ app.use('/', createProxyMiddleware({
   ws: true,
 }));
 
-const port = process.env.PORT || 8000;
+const port = process.env.PORT || 5010;
 app.listen(port, () => {
   console.log(`Auth proxy on :${port}, proxying to ${TARGET}`);
 });
