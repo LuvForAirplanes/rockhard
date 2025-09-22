@@ -1,0 +1,14 @@
+users:
+  - micah: mypass
+  - annie: herpass
+
+permissions:
+  - /static: public
+  - /index.css: public
+  - /prescript.js: public
+  - /postscript.js: public
+
+  - /test: micah
+  - /annie:
+    - annie
+#    - micah
