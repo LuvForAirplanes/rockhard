@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
-const { createProxyMiddleware } = require("http-proxy-middleware");
+const cookieParser = require("cookie-parser");
 const yaml = require("js-yaml");
 const picomatch = require("picomatch");
 
@@ -104,18 +104,6 @@ function bestRuleForPathExactGlob(rawPath) {
 }
 
 // ---------- Basic Auth ----------
-function parseBasicAuth(req) {
-  const hdr = req.headers["authorization"];
-  if (!hdr || !hdr.startsWith("Basic ")) return null;
-  try {
-    const raw = Buffer.from(hdr.slice(6), "base64").toString("utf8");
-    const i = raw.indexOf(":");
-    if (i < 0) return null;
-    return { username: raw.slice(0, i), password: raw.slice(i + 1) };
-  } catch {
-    return null;
-  }
-}
 function isValidUser(u, p) {
   return USERS[u] !== undefined && USERS[u] === p;
 }
@@ -129,9 +117,11 @@ function isPathAllowedForUser(pathLike, usernameOrNull) {
   return rule.allow.has(usernameOrNull); // specific users
 }
 
+
 // ---------- Boot ----------
 loadAccess();
 const app = express();
+app.use(cookieParser());
 
 // Hot-reload ACL
 app.post("/-/reload-acl", (req, res) => {
@@ -144,12 +134,20 @@ app.post("/-/reload-acl", (req, res) => {
   }
 });
 
+function parseCookieAuth(req) {
+  const username = req.cookies && req.cookies.user;
+  if (username && USERS[username]) {
+    return { username, password: USERS[username] };
+  }
+  return null;
+}
+
 // ---------- Intercept content index: use SLUGS for auth ----------
 app.get('/static/contentIndex.json', async (req, res) => {
   try {
     // Optional viewer (don’t force auth here)
     let viewer = null;
-    const creds = parseBasicAuth(req);
+    const creds = parseCookieAuth(req);
     if (creds && isValidUser(creds.username, creds.password)) viewer = creds.username;
 
     // Fetch upstream JSON
@@ -181,38 +179,42 @@ app.get('/static/contentIndex.json', async (req, res) => {
   }
 });
 
-// ---------- Auth/ACL gate for ALL other requests (same matcher) ----------
+// ---------- Cookie Auth gate for ALL other requests ----------
 app.use((req, res, next) => {
-  decoded_path = decodeURIComponent(req.path);
+  const decoded_path = decodeURIComponent(req.path);
   const rule = bestRuleForPathExactGlob(decoded_path);
-  if (!rule) return res.status(403).send("Forbidden: no matching rule");
+  if (!rule) return res.status(403).send("Forbidden: no matching rule. Maybe you need to login?");
 
   if (rule.allow === "public") return next();
 
-  const creds = parseBasicAuth(req);
-  if (!creds || !isValidUser(creds.username, creds.password)) {
-    res.set("WWW-Authenticate", 'Basic realm="Quartz"');
+  // Check cookie for user
+  const username = req.cookies && req.cookies.user;
+  if (!username || !USERS[username]) {
     return res.status(401).send("Authentication required");
   }
 
   if (rule.allow === "any") return next();
-  if (!rule.allow.has(creds.username))
-    return res.status(403).send("Forbidden: not allowed");
+  if (!rule.allow.has(username))
+    return res.status(403).send("Forbidden: not allowed. Maybe you need to login?");
 
   next();
 });
 
 // ---------- Login endpoint ----------
 app.get("/login", (req, res) => {
-  res.set("WWW-Authenticate", 'Basic realm="Quartz"');
-  res.status(401).send("Please re-authenticate");
+  const { user, password } = req.query;
+  if (!user || !password || !isValidUser(user, password)) {
+    return res.status(401).send("Invalid credentials");
+  }
+  // Set cookie for user
+  res.cookie("user", user, {});
+  res.status(200).send("Login successful");
 });
 
 // ---------- Logout endpoint ----------
 app.get("/logout", (req, res) => {
-  // Invalidate credentials by prompting for login with a dummy realm
-  res.set("WWW-Authenticate", 'Basic realm="Quartz", charset="UTF-8"');
-  res.status(401).send("Logged out. Please re-authenticate.");
+  res.clearCookie("user");
+  res.status(200).send("Logged out");
 });
 
 
