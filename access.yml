@@ -1,12 +1,17 @@
 users:
   - micah: mypass
-  - annie: herpass
+  - glenn: Jot-Dropkick-Matchbox1
 
 permissions:
   # UI Stuff 
   - "/static/*": public
   - "*.css": public
   - "*.js": public
+  - "/login": public
+  - "/logout": public
 
   - /Blog/: public
+  - /Projects/*: glenn
+  - /Projects/Joy in the Morning/: glenn
+  - /Projects/Joy in the Morning/*: glenn
   - /: public

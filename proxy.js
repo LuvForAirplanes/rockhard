@@ -75,6 +75,8 @@ function normalizePath(p) {
   if (!p) return '/';
   let out = p.replace(/\\/g, '/');       // force POSIX slashes
   if (!out.startsWith('/')) out = '/' + out;
+  // replace all spaces with dashes
+  out = out.replace(/ /g, '-');
   // keep trailing slash as-is (strict)
   return out;
 }
@@ -136,46 +138,46 @@ app.post('/-/reload-acl', (req, res) => {
 });
 
 // ---------- Intercept content index: use SLUGS for auth ----------
-app.get('/static/contentIndex.json', async (req, res) => {
-  try {
-    // Optional viewer (don’t force auth here)
-    let viewer = null;
-    const creds = parseBasicAuth(req);
-    if (creds && isValidUser(creds.username, creds.password)) viewer = creds.username;
+// app.get('/static/contentIndex.json', async (req, res) => {
+//   try {
+//     // Optional viewer (don’t force auth here)
+//     let viewer = null;
+//     const creds = parseBasicAuth(req);
+//     if (creds && isValidUser(creds.username, creds.password)) viewer = creds.username;
 
-    // Fetch upstream JSON
-    const upstreamUrl = new URL(req.originalUrl, TARGET).toString();
-    const r = await fetch(upstreamUrl, { headers: { accept: 'application/json' } });
-    if (!r.ok) return res.status(r.status).send(`Upstream error (${r.status})`);
-    const data = await r.json();
+//     // Fetch upstream JSON
+//     const upstreamUrl = new URL(req.originalUrl, TARGET).toString();
+//     const r = await fetch(upstreamUrl, { headers: { accept: 'application/json' } });
+//     if (!r.ok) return res.status(r.status).send(`Upstream error (${r.status})`);
+//     const data = await r.json();
 
-    // Filter by slug (NOT filePath). Slug may also be the object key.
-    const out = {};
-    for (const [key, val] of Object.entries(data || {})) {
-      if (!val || typeof val !== 'object') continue;
-      const slug = String(val.slug || key).trim();
-      if (!slug) continue;
+//     // Filter by slug (NOT filePath). Slug may also be the object key.
+//     const out = {};
+//     for (const [key, val] of Object.entries(data || {})) {
+//       if (!val || typeof val !== 'object') continue;
+//       const slug = String(val.slug || key).trim();
+//       if (!slug) continue;
 
-      let vpath = normalizePath(slug); // e.g. "Contacts/Bradley-Kreider" -> "/Contacts/Bradley-Kreider"
-      // replace /index at end with /
-      // e.g. "/Contacts/Bradley-Kreider/index" -> "/Contacts/Bradley-Kreider/"
-      if (vpath.endsWith('/index')) vpath = vpath.slice(0, -5) || '/';
-      if (isPathAllowedForUser(vpath, viewer)) out[key] = val;
-    }
+//       let vpath = normalizePath(slug); // e.g. "Contacts/Bradley-Kreider" -> "/Contacts/Bradley-Kreider"
+//       // replace /index at end with /
+//       // e.g. "/Contacts/Bradley-Kreider/index" -> "/Contacts/Bradley-Kreider/"
+//       if (vpath.endsWith('/index')) vpath = vpath.slice(0, -5) || '/';
+//       if (isPathAllowedForUser(vpath, viewer)) out[key] = val;
+//     }
 
-    res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.status(200).send(JSON.stringify(out));
-  } catch (e) {
-    console.error('contentIndex interceptor failed:', e);
-    res.setHeader('content-type', 'application/json; charset=utf-8');
-    res.status(200).send('{}');
-  }
-});
+//     res.setHeader('content-type', 'application/json; charset=utf-8');
+//     res.status(200).send(JSON.stringify(out));
+//   } catch (e) {
+//     console.error('contentIndex interceptor failed:', e);
+//     res.setHeader('content-type', 'application/json; charset=utf-8');
+//     res.status(200).send('{}');
+//   }
+// });
 
 // ---------- Auth/ACL gate for ALL other requests (same matcher) ----------
 app.use((req, res, next) => {
-  // Use req.path as-is (Express already decodes %20 etc). Keep strict slashes.
-  const rule = bestRuleForPathExactGlob(req.path);
+  decoded_path = decodeURIComponent(req.path);
+  const rule = bestRuleForPathExactGlob(decoded_path);
   if (!rule) return res.status(403).send('Forbidden: no matching rule');
 
   if (rule.allow === 'public') return next();
@@ -190,6 +192,21 @@ app.use((req, res, next) => {
   if (!rule.allow.has(creds.username)) return res.status(403).send('Forbidden: not allowed');
 
   next();
+});
+
+// ---------- Proxy ----------
+
+// ---------- Login endpoint ----------
+app.get('/login', (req, res) => {
+  res.set('WWW-Authenticate', 'Basic realm="Quartz"');
+  res.status(401).send('Please re-authenticate');
+});
+
+// ---------- Logout endpoint ----------
+app.get('/logout', (req, res) => {
+  // Invalidate credentials by prompting for login with a dummy realm
+  res.set('WWW-Authenticate', 'Basic realm="Quartz", charset="UTF-8"');
+  res.status(401).send('Logged out. Please re-authenticate.');
 });
 
 // ---------- Proxy ----------
