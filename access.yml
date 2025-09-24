@@ -13,4 +13,6 @@ permissions:
   - /Blog/: public
   - /Projects/Joy in the Morning/**/*: glenn
   - /Projects/Joy in the Morning/**/: glenn
+  - /Journal/Archive/2004 and Early Life/**/*: glenn
+  - /Journal/Archive/2004 and Early Life/**/: glenn
   - /: public

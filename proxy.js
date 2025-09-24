@@ -208,7 +208,7 @@ app.get("/login", (req, res) => {
   }
   // Set cookie for user
   res.cookie("user", user, {});
-  res.status(200).send("Login successful");
+  res.status(200).send("Login successful. Go to the homepage. <a href='https://micah.thestauffer.family'>Go to Homepage</a>");
 });
 
 // ---------- Logout endpoint ----------
